@@ -1,0 +1,24 @@
+{
+  "name": "pi-code-render",
+  "version": "0.1.3",
+  "description": "Render fenced code blocks in Pi's transcript as styled, flush-edge cards with language labels, one-click copy, and a raw-text toggle.",
+  "license": "MIT",
+  "keywords": [
+    "pi-package"
+  ],
+  "type": "module",
+  "files": [
+    "extensions",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/pi-code-render.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}
