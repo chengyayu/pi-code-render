@@ -8,6 +8,12 @@ click-to-toggle raw-text view.
 
 ![pi-code-render cards](https://raw.githubusercontent.com/chengyayu/pi-code-render/main/docs/card.png)
 
+## Before / After
+
+| Native rendering | With pi-code-render |
+| --- | --- |
+| ![Before: native fenced blocks](https://raw.githubusercontent.com/chengyayu/pi-code-render/main/docs/before.png) | ![After: code cards](https://raw.githubusercontent.com/chengyayu/pi-code-render/main/docs/card.png) |
+
 ## Features
 
 - **Code cards** — fenced code blocks in assistant messages render as
