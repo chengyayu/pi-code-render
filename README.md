@@ -1,10 +1,10 @@
 # pi-code-render
 
-Code cards for the [Pi coding agent](https://pi.dev/).
+English | [中文](./README.zh-CN.md)
 
 `pi-code-render` renders fenced code blocks in assistant messages as styled,
 flush-edge cards with a one-click `[COPY]` button and a click-to-toggle
-raw-text view.
+raw-text view for the [Pi coding agent](https://pi.dev/).
 
 ![pi-code-render cards](https://raw.githubusercontent.com/chengyayu/pi-code-render/main/docs/card.png)
 

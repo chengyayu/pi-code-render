@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install peer dependencies
+        run: |
+          npm install --no-save --omit=dev \
+            @earendil-works/pi-coding-agent \
+            @earendil-works/pi-tui \
+            @types/node \
+            typescript
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Verify the published tarball contents
+        run: npm pack --dry-run

@@ -66,7 +66,12 @@ type LayoutCache = {
   lines: string[];
 };
 
-type MarkdownWithPrivateRenderer = Markdown & {
+/**
+ * Pi's Markdown component keeps `renderToken`, `render`, and `handleMouse`
+ * private (or absent) in its public typings. `Omit` drops those members before
+ * we re-declare them, so the intersection does not collapse to `never`.
+ */
+type MarkdownWithPrivateRenderer = Omit<Markdown, "renderToken" | "render" | "handleMouse"> & {
   renderToken: (
     token: CodeToken,
     width: number,
@@ -307,12 +312,13 @@ function installPatch(
     return cacheLayout(instance, key, lines);
   };
 
-  const patchedRenderToken: MarkdownWithPrivateRenderer["renderToken"] = function (
-    token,
-    width,
-    nextTokenType,
-    styleContext,
-  ) {
+  const patchedRenderToken = function (
+    this: Markdown,
+    token: CodeToken,
+    width: number,
+    nextTokenType?: string,
+    styleContext?: unknown,
+  ): string[] {
     if (token?.type !== "code") {
       return originalRenderToken.call(this, token, width, nextTokenType, styleContext);
     }
@@ -376,7 +382,7 @@ function installPatch(
     return card;
   };
 
-  const patchedRender: MarkdownWithPrivateRenderer["render"] = function (width) {
+  const patchedRender = function (this: Markdown, width: number): string[] {
     const text = getText(this);
     const key = `${width}\u0000${text}`;
     const cached = layoutCache.get(this);
@@ -429,7 +435,10 @@ function installPatch(
     return true;
   };
 
-  const patchedHandleMouse: NonNullable<MarkdownWithPrivateRenderer["handleMouse"]> = function (event) {
+  const patchedHandleMouse = function (
+    this: Markdown,
+    event: TuiMouseEvent,
+  ): TuiMouseEventResult | undefined {
     if (event.button !== "left") {
       return originalHandleMouse?.call(this, event);
     }

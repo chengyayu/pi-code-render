@@ -19,9 +19,13 @@
     "url": "git+https://github.com/chengyayu/pi-code-render.git"
   },
   "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
   "files": [
     "extensions",
     "README.md",
+    "README.zh-CN.md",
     "LICENSE"
   ],
   "pi": {
