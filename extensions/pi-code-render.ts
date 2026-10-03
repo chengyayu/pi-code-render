@@ -17,16 +17,20 @@ import {
 
 const PATCH = Symbol.for("pi-code-render.markdown-patch");
 const CARD_BG = "toolSuccessBg" as const;
-const COPY_LABEL = "[Copy]";
+const COPY_LABEL = "[COPY]";
 const STATUS_KEY = "pi-code-render";
 const STATUS_CLEAR_MS = 2000;
 
 /** Left/right padding inside a code card, in terminal columns. */
 const CARD_PAD = "  ";
 
-type CodeToken = { type?: string; lang?: string; text?: string };
+type CodeToken = {
+  type?: string;
+  lang?: string;
+  text?: string;
+};
+
 type CodeBlock = {
-  language: string;
   source: string;
   /** Line count produced for the card presentation. */
   cardLines?: number;
@@ -34,10 +38,33 @@ type CodeBlock = {
   rawLines?: number;
   raw?: boolean;
 };
-type BlockRange = { startY: number; endY: number; index: number };
-type CopyHit = { y: number; startX: number; endX: number; source: string };
-type Gesture = { x: number; y: number; source?: string; index?: number };
-type LayoutCache = { key: string; hits: CopyHit[]; ranges: BlockRange[]; lines: string[] };
+
+type BlockRange = {
+  startY: number;
+  endY: number;
+  index: number;
+};
+
+type CopyHit = {
+  y: number;
+  startX: number;
+  endX: number;
+  source: string;
+};
+
+type Gesture = {
+  x: number;
+  y: number;
+  source?: string;
+  index?: number;
+};
+
+type LayoutCache = {
+  key: string;
+  hits: CopyHit[];
+  ranges: BlockRange[];
+  lines: string[];
+};
 
 type MarkdownWithPrivateRenderer = Markdown & {
   renderToken: (
@@ -63,35 +90,9 @@ function languageFromInfo(info: unknown): string {
   return typeof info === "string" ? info.trim().split(/\s+/, 1)[0] ?? "" : "";
 }
 
-const LANGUAGE_LABELS: Record<string, string> = {
-  bash: "Shell",
-  c: "C",
-  cpp: "C++",
-  css: "CSS",
-  go: "Go",
-  html: "HTML",
-  java: "Java",
-  javascript: "JavaScript",
-  js: "JavaScript",
-  json: "JSON",
-  jsx: "JSX",
-  markdown: "Markdown",
-  md: "Markdown",
-  python: "Python",
-  py: "Python",
-  rust: "Rust",
-  sh: "Shell",
-  shell: "Shell",
-  sql: "SQL",
-  ts: "TypeScript",
-  tsx: "TSX",
-  typescript: "TypeScript",
-  yaml: "YAML",
-  yml: "YAML",
-};
-
-function displayLanguage(language: string): string {
-  return LANGUAGE_LABELS[language.toLowerCase()] ?? (language || "Code");
+function normalizeCodeToken(token: CodeToken, language: string): CodeToken {
+  // Markdown info strings can include metadata (for example, "js workflow").
+  return language && token.lang !== language ? { ...token, lang: language } : token;
 }
 
 /** Pad a styled line with the card background out to `width` columns. */
@@ -183,42 +184,39 @@ function locateBlocks(
   const ranges: BlockRange[] = [];
   let cursor = 0;
 
-  blocks.forEach((block, index) => {
-    // Each block is anchored by its own marker (card header or raw fence opener)
-    // and bounded by the exact line count renderToken produced for it.
+  for (const [index, block] of blocks.entries()) {
     let y = cursor;
+
     if (block.raw) {
       while (y < plainLines.length && !plainLines[y]?.trim().startsWith("```")) y++;
-      if (y >= plainLines.length) return;
+      if (y >= plainLines.length) continue;
+
       const endY = y + Math.max(1, block.rawLines ?? 1) - 1;
       ranges.push({ startY: y, endY, index });
       cursor = endY + 1;
-      return;
+      continue;
     }
 
-    const label = displayLanguage(block.language);
-    // The card header is exactly: leading whitespace, the language label, a gap,
-    // the copy button, trailing whitespace. Prose that merely mentions the label
-    // and button on one line must not match (it breaks the click hit-testing).
-    const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const anchor = new RegExp(`^\\s*${escapedLabel}\\s+\\[Copy\\]\\s*$`);
-    while (y < plainLines.length && !anchor.test(plainLines[y] ?? "")) y++;
-    if (y >= plainLines.length) return;
+    // The card opens with a blank padding row, then the code's first line
+    // carries the right-aligned copy button. Anchor on that button line: Pi
+    // may re-wrap our card rows, so match the label anywhere on the line
+    // instead of requiring it to sit exactly at the end.
+    while (y < plainLines.length && !(plainLines[y] ?? "").includes(COPY_LABEL)) y++;
+    if (y >= plainLines.length) continue;
 
     const line = plainLines[y] ?? "";
     const startX = visibleWidth(line.slice(0, line.lastIndexOf(COPY_LABEL)));
     const endY = y + Math.max(1, block.cardLines ?? 1) - 1;
     hits.push({ y, startX, endX: startX + copyButtonWidth, source: block.source });
-    ranges.push({ startY: y, endY, index });
+    ranges.push({ startY: Math.max(cursor, y - 1), endY, index });
     cursor = endY + 1;
-  });
+  }
 
   return { hits, ranges };
 }
 
 function buildCard(
   highlighted: readonly string[],
-  language: string,
   cardWidth: number,
   codeIndent: string,
   bg: (value: string) => string,
@@ -226,18 +224,30 @@ function buildCard(
 ): string[] {
   const innerWidth = Math.max(1, cardWidth - CARD_PAD.length * 2);
   const buttonWidth = visibleWidth(COPY_LABEL);
-  const gapWidth = Math.max(
-    1,
-    cardWidth - visibleWidth(`  ${language}`) - buttonWidth - CARD_PAD.length,
-  );
-  const header = `  ${language}${" ".repeat(gapWidth)}${accent(COPY_LABEL)}${CARD_PAD}`;
-  const card = [fillRow("", cardWidth, bg), fillRow(header, cardWidth, bg), fillRow("", cardWidth, bg)];
+  const align = (line: string): string =>
+    line.startsWith(codeIndent) ? line.slice(codeIndent.length) : line;
+  const firstLine = highlighted[0] === undefined ? "" : align(highlighted[0]);
+  const firstLineWidth = Math.max(1, innerWidth - buttonWidth - CARD_PAD.length);
+  const wrappedFirstLine = wrapTextWithAnsi(firstLine, firstLineWidth);
+  const firstLineContent = wrappedFirstLine[0] ?? "";
+  const gapWidth = Math.max(1, innerWidth - visibleWidth(firstLineContent) - buttonWidth);
+  const card = [
+    fillRow("", cardWidth, bg),
+    fillRow(
+      `${CARD_PAD}${firstLineContent}${" ".repeat(gapWidth)}${accent(COPY_LABEL)}${CARD_PAD}`,
+      cardWidth,
+      bg,
+    ),
+  ];
 
-  for (const codeLine of highlighted) {
-    const alignedLine = codeLine.startsWith(codeIndent) ? codeLine.slice(codeIndent.length) : codeLine;
-    const wrapped = wrapTextWithAnsi(alignedLine, innerWidth);
-    for (const line of wrapped.length > 0 ? wrapped : [""]) {
-      card.push(fillRow(`${CARD_PAD}${line}${CARD_PAD}`, cardWidth, bg));
+  for (const line of wrappedFirstLine.slice(1)) {
+    card.push(fillRow(`${CARD_PAD}${line}${CARD_PAD}`, cardWidth, bg));
+  }
+
+  for (const line of highlighted.slice(1)) {
+    const wrapped = wrapTextWithAnsi(align(line), innerWidth);
+    for (const wrappedLine of wrapped.length > 0 ? wrapped : [""]) {
+      card.push(fillRow(`${CARD_PAD}${wrappedLine}${CARD_PAD}`, cardWidth, bg));
     }
   }
 
@@ -273,11 +283,29 @@ function installPatch(
 
   /**
    * User messages and thinking blocks pass a defaultTextStyle to Markdown;
-   * assistant transcript text does not. Those contexts keep Pi's native
-   * code-fence rendering instead of cards.
+   * assistant transcript text does not. Keep Pi's native rendering there.
    */
   const isPlainTextContext = (instance: Markdown): boolean =>
     !!(instance as unknown as { defaultTextStyle?: unknown }).defaultTextStyle;
+
+  const cacheLayout = (
+    instance: Markdown,
+    key: string,
+    lines: string[],
+    hits: CopyHit[] = EMPTY_HITS,
+    ranges: BlockRange[] = EMPTY_RANGES,
+  ): string[] => {
+    layoutCache.set(instance, { key, hits, ranges, lines });
+    copyHits.set(instance, hits);
+    blockRanges.set(instance, ranges);
+    return lines;
+  };
+
+  const renderWithoutCards = (instance: Markdown, width: number, key: string): string[] => {
+    const lines = originalRender.call(instance, width);
+    knownBlocks.delete(instance);
+    return cacheLayout(instance, key, lines);
+  };
 
   const patchedRenderToken: MarkdownWithPrivateRenderer["renderToken"] = function (
     token,
@@ -292,13 +320,17 @@ function installPatch(
     const language = languageFromInfo(token.lang);
 
     if (isPlainTextContext(this)) {
-      const normalized = language && token.lang !== language ? { ...token, lang: language } : token;
-      return originalRenderToken.call(this, normalized, width, nextTokenType, styleContext);
+      return originalRenderToken.call(
+        this,
+        normalizeCodeToken(token, language),
+        width,
+        nextTokenType,
+        styleContext,
+      );
     }
 
     const capture = captureBlocks.get(this);
-    const blockIndex = capture?.length ?? 0;
-    const block: CodeBlock = { language, source: token.text ?? "" };
+    const block: CodeBlock = { source: token.text ?? "" };
     capture?.push(block);
 
     // Toggled blocks render as the original fenced text.
@@ -309,10 +341,13 @@ function installPatch(
       return rawRendered;
     }
 
-    // Markdown info strings can carry metadata (for example "js workflow");
-    // highlight using the first word, which is the actual language identifier.
-    const normalizedToken = language && token.lang !== language ? { ...token, lang: language } : token;
-    const rendered = originalRenderToken.call(this, normalizedToken, width, nextTokenType, styleContext);
+    const rendered = originalRenderToken.call(
+      this,
+      normalizeCodeToken(token, language),
+      width,
+      nextTokenType,
+      styleContext,
+    );
 
     const closingFence = rendered.findIndex(
       (line, index) => index > 0 && stripTerminalSequences(line).trim() === "```",
@@ -326,7 +361,6 @@ function installPatch(
     const theme = getTheme();
     const card = buildCard(
       rendered.slice(1, closingFence),
-      displayLanguage(language),
       Math.max(1, width),
       (this as unknown as { theme?: { codeBlockIndent?: string } }).theme?.codeBlockIndent ?? "  ",
       (value) => theme.bg(CARD_BG, value),
@@ -335,7 +369,9 @@ function installPatch(
     if (nextTokenType && nextTokenType !== "space") {
       card.push("");
     }
-    block.cardLines = card.length;
+    // `card` starts with a blank padding row; the click anchor is the next
+    // row. Count cards from the anchor so hit ranges cover the full card.
+    block.cardLines = Math.max(1, card.length - 1);
     block.rawLines = rendered.length;
     return card;
   };
@@ -351,29 +387,19 @@ function installPatch(
     }
 
     // Plain contexts (user messages, thinking) keep native rendering.
-    if (isPlainTextContext(this)) {
-      const lines = originalRender.call(this, width);
-      layoutCache.set(this, { key, hits: EMPTY_HITS, ranges: EMPTY_RANGES, lines });
-      copyHits.set(this, EMPTY_HITS);
-      blockRanges.set(this, EMPTY_RANGES);
-      knownBlocks.delete(this);
-      return lines;
-    }
+    if (isPlainTextContext(this)) return renderWithoutCards(this, width, key);
 
-    // Fast path: messages without code fences need no per-render bookkeeping.
-    if (!text.includes("```")) {
-      const lines = originalRender.call(this, width);
-      layoutCache.set(this, { key, hits: EMPTY_HITS, ranges: EMPTY_RANGES, lines });
-      copyHits.set(this, EMPTY_HITS);
-      blockRanges.set(this, EMPTY_RANGES);
-      knownBlocks.delete(this);
-      return lines;
-    }
+    // Messages without code fences need no per-render bookkeeping.
+    if (!text.includes("```")) return renderWithoutCards(this, width, key);
 
     const currentBlocks: CodeBlock[] = [];
     captureBlocks.set(this, currentBlocks);
-    const lines = originalRender.call(this, width);
-    captureBlocks.delete(this);
+    let lines: string[];
+    try {
+      lines = originalRender.call(this, width);
+    } finally {
+      captureBlocks.delete(this);
+    }
 
     if (currentBlocks.length > 0) {
       knownBlocks.set(this, currentBlocks);
@@ -382,19 +408,25 @@ function installPatch(
     }
 
     const plainLines = lines.map((line) => stripTerminalSequences(line));
-    const { hits, ranges } = locateBlocks(
-      plainLines,
-      knownBlocks.get(this) ?? [],
-      visibleWidth(COPY_LABEL),
-    );
-    copyHits.set(this, hits);
-    blockRanges.set(this, ranges);
-    layoutCache.set(this, { key, hits, ranges, lines });
+    const blocks = knownBlocks.get(this) ?? [];
+    const { hits, ranges } = locateBlocks(plainLines, blocks, visibleWidth(COPY_LABEL));
 
-    const blocks = knownBlocks.get(this);
-    const last = blocks?.[blocks.length - 1];
+    const last = blocks[blocks.length - 1];
     if (last) setLatestCode(last.source);
-    return lines;
+    return cacheLayout(this, key, lines, hits, ranges);
+  };
+
+  const toggleRawBlock = (instance: Markdown, index: number): boolean => {
+    const block = knownBlocks.get(instance)?.[index];
+    if (!block) return false;
+
+    const toggled = rawSources.get(instance) ?? new Set<string>();
+    if (toggled.has(block.source)) toggled.delete(block.source);
+    else toggled.add(block.source);
+    rawSources.set(instance, toggled);
+    layoutCache.delete(instance);
+    instance.invalidate();
+    return true;
   };
 
   const patchedHandleMouse: NonNullable<MarkdownWithPrivateRenderer["handleMouse"]> = function (event) {
@@ -415,15 +447,15 @@ function installPatch(
       );
       if (hit) {
         gestures.set(this, { x: event.x, y: event.y, source: hit.source });
-      } else {
-        const range = blockRanges.get(this)?.find((item) => event.y >= item.startY && event.y <= item.endY);
-        if (range) {
-          gestures.set(this, { x: event.x, y: event.y, index: range.index });
-        } else {
-          gestures.delete(this);
-          return originalHandleMouse?.call(this, event);
-        }
+        return { handled: true, capture: true };
       }
+
+      const range = blockRanges.get(this)?.find((item) => event.y >= item.startY && event.y <= item.endY);
+      if (!range) {
+        gestures.delete(this);
+        return originalHandleMouse?.call(this, event);
+      }
+      gestures.set(this, { x: event.x, y: event.y, index: range.index });
       return { handled: true, capture: true };
     }
 
@@ -442,18 +474,8 @@ function installPatch(
         copyCode(gesture.source);
         return { handled: true };
       }
-      if (gesture.index !== undefined) {
-        const blocks = knownBlocks.get(this);
-        const block = blocks?.[gesture.index];
-        if (block) {
-          const toggled = rawSources.get(this) ?? new Set<string>();
-          if (toggled.has(block.source)) toggled.delete(block.source);
-          else toggled.add(block.source);
-          rawSources.set(this, toggled);
-          layoutCache.delete(this);
-          this.invalidate();
-          return { handled: true, render: true };
-        }
+      if (gesture.index !== undefined && toggleRawBlock(this, gesture.index)) {
+        return { handled: true, render: true };
       }
     }
 
@@ -529,12 +551,20 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  pi.on("session_start", (_event, ctx) => {
+  /** Reset session-scoped state; safe to run when no session is active. */
+  const resetSessionState = () => {
     restore?.();
     restore = undefined;
     themeContext = undefined;
     latestCode = "";
+    if (statusTimer) {
+      clearTimeout(statusTimer);
+      statusTimer = undefined;
+    }
+  };
 
+  pi.on("session_start", (_event, ctx) => {
+    resetSessionState();
     if (ctx.mode !== "tui") return;
 
     themeContext = ctx;
@@ -553,13 +583,6 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", () => {
-    restore?.();
-    restore = undefined;
-    themeContext = undefined;
-    latestCode = "";
-    if (statusTimer) {
-      clearTimeout(statusTimer);
-      statusTimer = undefined;
-    }
+    resetSessionState();
   });
 }

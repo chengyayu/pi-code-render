@@ -1,7 +1,7 @@
 {
   "name": "pi-code-render",
-  "version": "0.1.6",
-  "description": "Render fenced code blocks in Pi's transcript as styled, flush-edge cards with language labels, one-click copy, and a raw-text toggle.",
+  "version": "0.1.7",
+  "description": "Render fenced code blocks in Pi's transcript as styled, flush-edge cards with one-click copy and a raw-text toggle.",
   "license": "MIT",
   "keywords": [
     "pi-package",

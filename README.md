@@ -3,8 +3,8 @@
 Code cards for the [Pi coding agent](https://pi.dev/).
 
 `pi-code-render` renders fenced code blocks in assistant messages as styled,
-flush-edge cards with a language label, a one-click `[Copy]` button, and a
-click-to-toggle raw-text view.
+flush-edge cards with a one-click `[COPY]` button and a click-to-toggle
+raw-text view.
 
 ![pi-code-render cards](https://raw.githubusercontent.com/chengyayu/pi-code-render/main/docs/card.png)
 
@@ -17,11 +17,10 @@ click-to-toggle raw-text view.
 ## Features
 
 - **Code cards** — fenced code blocks in assistant messages render as
-  theme-colored, full-width panels with vertical breathing room, matching
-  Pi's native codemode panel look.
-- **Language label** — the top-left corner shows a friendly language name
-  (`JavaScript`, `Python`, `Shell`, ...). Untagged fences fall back to `Code`.
-- **One-click copy** — a `[Copy]` button in the top-right copies the block's
+  theme-colored, full-width panels, matching Pi's native codemode panel look.
+  The `[COPY]` button sits at the end of the block's first line, so the code
+  starts immediately with no language-label header above it.
+- **One-click copy** — a `[COPY]` button in the top-right copies the block's
   source (fences stripped) to the clipboard. `Ctrl+Alt+C` copies the most
   recently rendered block from anywhere.
 - **Raw-text toggle** — click anywhere on a card to switch that block back to
@@ -47,7 +46,7 @@ Then restart Pi or run `/reload`.
 
 | Action | Result |
 | --- | --- |
-| Click `[Copy]` | Copy that block's source to the clipboard |
+| Click `[COPY]` | Copy that block's source to the clipboard |
 | Click anywhere else on a card | Toggle between card and raw fenced text |
 | `Ctrl+Alt+C` | Copy the most recently rendered code block |
 
