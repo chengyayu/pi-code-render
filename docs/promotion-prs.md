@@ -40,7 +40,7 @@ Add pi-code-render to UI Enhancement
 - npm: https://www.npmjs.com/package/pi-code-render
 - 源码: https://github.com/chengyayu/pi-code-render
 - 许可: MIT
-- 已发布版本: 0.1.7
+- 已发布版本: 0.1.8
 
 对比截图见 README 的 Before / After 一节。感谢维护这个列表。
 ```
