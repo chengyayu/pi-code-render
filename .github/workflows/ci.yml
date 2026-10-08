@@ -21,10 +21,14 @@ jobs:
             @earendil-works/pi-coding-agent \
             @earendil-works/pi-tui \
             @types/node \
-            typescript
+            typescript \
+            esbuild
 
       - name: Typecheck
         run: npx tsc --noEmit
+
+      - name: Render tests
+        run: node test/render.test.mjs
 
   package:
     runs-on: ubuntu-latest

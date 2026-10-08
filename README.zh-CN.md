@@ -45,7 +45,12 @@ pi install npm:pi-code-render
 | --- | --- |
 | 点击 `[COPY]` | 复制该代码块源码到剪贴板 |
 | 点击卡片其他位置 | 在卡片与原始围栏文本之间切换 |
+| 点击原始文本里的代码 | 折回卡片 |
+| 在原始文本的代码上拖动 | 按普通文本选中（Pi 的选中即复制会一并复制） |
 | `Ctrl+Alt+C` | 复制最近渲染的代码块 |
+
+原始围栏文本保持可选中：代码区域交给 Pi 的文本选择，拖动或双击即可选中并复制；
+原地单击则把该块折回卡片。
 
 ## 兼容性
 
@@ -63,3 +68,10 @@ pi remove npm:pi-code-render
 ## License
 
 MIT
+
+## 开发
+
+```bash
+npm run typecheck   # tsc --noEmit
+npm test            # 渲染测试（node test/render.test.mjs）
+```

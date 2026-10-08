@@ -18,6 +18,18 @@ import {
 const PATCH = Symbol.for("pi-code-render.markdown-patch");
 const CARD_BG = "toolSuccessBg" as const;
 const COPY_LABEL = "[COPY]";
+/**
+ * Zero-width prefix on the rendered label: prose or inline code can end with
+ * the literal `[COPY]`, and such a row would hijack the anchor search.
+ */
+const COPY_ANCHOR = `\u200b${COPY_LABEL}`;
+/**
+ * Zero-width mark on a raw block's opening fence row. Row scanning cannot find
+ * that fence (`trim().startsWith("```")`) because Pi prefixes rows inside a
+ * blockquote with its border, so the scan would run on and anchor the block to
+ * a later block's fence.
+ */
+const RAW_ANCHOR = "\u2060";
 const STATUS_KEY = "pi-code-render";
 const STATUS_CLEAR_MS = 2000;
 
@@ -53,10 +65,11 @@ type CopyHit = {
 };
 
 type Gesture = {
-  x: number;
-  y: number;
+  /** Copy-button source; set only when the press landed on the button. */
   source?: string;
-  index?: number;
+  index: number;
+  /** Source of the pressed block; a streaming update renumbers blocks. */
+  blockSource: string;
 };
 
 type LayoutCache = {
@@ -67,9 +80,8 @@ type LayoutCache = {
 };
 
 /**
- * Pi's Markdown component keeps `renderToken`, `render`, and `handleMouse`
- * private (or absent) in its public typings. `Omit` drops those members before
- * we re-declare them, so the intersection does not collapse to `never`.
+ * `Omit` drops the private members before re-declaring them, so the
+ * intersection does not collapse to `never`.
  */
 type MarkdownWithPrivateRenderer = Omit<Markdown, "renderToken" | "render" | "handleMouse"> & {
   renderToken: (
@@ -193,7 +205,7 @@ function locateBlocks(
     let y = cursor;
 
     if (block.raw) {
-      while (y < plainLines.length && !plainLines[y]?.trim().startsWith("```")) y++;
+      while (y < plainLines.length && !(plainLines[y] ?? "").includes(RAW_ANCHOR)) y++;
       if (y >= plainLines.length) continue;
 
       const endY = y + Math.max(1, block.rawLines ?? 1) - 1;
@@ -203,14 +215,13 @@ function locateBlocks(
     }
 
     // The card opens with a blank padding row, then the code's first line
-    // carries the right-aligned copy button. Anchor on that button line: Pi
-    // may re-wrap our card rows, so match the label anywhere on the line
-    // instead of requiring it to sit exactly at the end.
-    while (y < plainLines.length && !(plainLines[y] ?? "").includes(COPY_LABEL)) y++;
+    // carries the right-aligned copy button. Anchor on that button row, which
+    // is identified by the zero-width marker in the label.
+    while (y < plainLines.length && !(plainLines[y] ?? "").includes(COPY_ANCHOR)) y++;
     if (y >= plainLines.length) continue;
 
     const line = plainLines[y] ?? "";
-    const startX = visibleWidth(line.slice(0, line.lastIndexOf(COPY_LABEL)));
+    const startX = visibleWidth(line.slice(0, line.lastIndexOf(COPY_ANCHOR)));
     const endY = y + Math.max(1, block.cardLines ?? 1) - 1;
     hits.push({ y, startX, endX: startX + copyButtonWidth, source: block.source });
     ranges.push({ startY: Math.max(cursor, y - 1), endY, index });
@@ -239,7 +250,7 @@ function buildCard(
   const card = [
     fillRow("", cardWidth, bg),
     fillRow(
-      `${CARD_PAD}${firstLineContent}${" ".repeat(gapWidth)}${accent(COPY_LABEL)}${CARD_PAD}`,
+      `${CARD_PAD}${firstLineContent}${" ".repeat(gapWidth)}${accent(COPY_ANCHOR)}${CARD_PAD}`,
       cardWidth,
       bg,
     ),
@@ -274,13 +285,20 @@ function installPatch(
   const originalHandleMouse = prototype.handleMouse;
 
   const captureBlocks = new WeakMap<Markdown, CodeBlock[]>();
-  /** Blocks that survive cached renders (renderToken only fires on cold renders). */
+  /** Survives cached renders, where renderToken only fires on cold renders. */
   const knownBlocks = new WeakMap<Markdown, CodeBlock[]>();
-  const copyHits = new WeakMap<Markdown, CopyHit[]>();
-  const blockRanges = new WeakMap<Markdown, BlockRange[]>();
-  /** Sources toggled to the raw fenced presentation; survives streaming text edits. */
-  const rawSources = new WeakMap<Markdown, Set<string>>();
+  /**
+   * Blocks toggled to raw, keyed by index and paired with their source so
+   * streaming edits and byte-identical siblings stay independent.
+   */
+  const rawSources = new WeakMap<Markdown, Map<number, string>>();
   const gestures = new WeakMap<Markdown, Gesture>();
+  /**
+   * Instances whose captured release will echo a click event. Pi dispatches the
+   * click itself after a captured release, and the release already acted, so
+   * that echo is not a second activation.
+   */
+  const capturedEcho = new WeakSet<Markdown>();
   const layoutCache = new WeakMap<Markdown, LayoutCache>();
 
   const getText = (instance: Markdown): string =>
@@ -301,8 +319,6 @@ function installPatch(
     ranges: BlockRange[] = EMPTY_RANGES,
   ): string[] => {
     layoutCache.set(instance, { key, hits, ranges, lines });
-    copyHits.set(instance, hits);
-    blockRanges.set(instance, ranges);
     return lines;
   };
 
@@ -324,8 +340,12 @@ function installPatch(
     }
 
     const language = languageFromInfo(token.lang);
+    const capture = captureBlocks.get(this);
+    const source = token.text ?? "";
 
-    if (isPlainTextContext(this)) {
+    // Plain contexts (user messages, thinking) and empty tokens from stray or
+    // unterminated fences keep Pi's native presentation.
+    if (isPlainTextContext(this) || source.trim() === "") {
       return originalRenderToken.call(
         this,
         normalizeCodeToken(token, language),
@@ -335,15 +355,22 @@ function installPatch(
       );
     }
 
-    const capture = captureBlocks.get(this);
-    const block: CodeBlock = { source: token.text ?? "" };
+    const index = capture?.length ?? -1;
+    const block: CodeBlock = { source };
     capture?.push(block);
 
     // Toggled blocks render as the original fenced text.
-    if (rawSources.get(this)?.has(block.source)) {
+    if (rawSources.get(this)?.get(index) === source) {
       const rawRendered = originalRenderToken.call(this, token, width, nextTokenType, styleContext);
       block.raw = true;
-      block.rawLines = rawRendered.length;
+      // Pi re-wraps every token row at this width after renderToken returns, so
+      // counting rawRendered.length ends the click range short and the bottom
+      // of the raw block stops responding.
+      block.rawLines = rawRendered.reduce(
+        (total, line) => total + Math.max(1, wrapTextWithAnsi(line, width).length),
+        0,
+      );
+      if (rawRendered.length > 0) rawRendered[0] = `${rawRendered[0] ?? ""}${RAW_ANCHOR}`;
       return rawRendered;
     }
 
@@ -355,14 +382,17 @@ function installPatch(
       styleContext,
     );
 
-    const closingFence = rendered.findIndex(
-      (line, index) => index > 0 && stripTerminalSequences(line).trim() === "```",
-    );
-
-    // Preserve Pi's native fallback if its Markdown output shape changes.
-    if (closingFence < 1) {
-      return rendered;
+    // Scan backwards for the closing fence: code content may itself contain
+    // bare fence rows, and only the last one is the one Pi appended.
+    let closingFence = -1;
+    for (let lineIndex = rendered.length - 1; lineIndex > 0; lineIndex--) {
+      if (stripTerminalSequences(rendered[lineIndex] ?? "").trim() === "```") {
+        closingFence = lineIndex;
+        break;
+      }
     }
+
+    if (closingFence < 1) return rendered; // Pi's output shape changed; bail out.
 
     const theme = getTheme();
     const card = buildCard(
@@ -372,13 +402,9 @@ function installPatch(
       (value) => theme.bg(CARD_BG, value),
       (value) => theme.fg("accent", value),
     );
-    if (nextTokenType && nextTokenType !== "space") {
-      card.push("");
-    }
-    // `card` starts with a blank padding row; the click anchor is the next
-    // row. Count cards from the anchor so hit ranges cover the full card.
+    if (nextTokenType && nextTokenType !== "space") card.push("");
+    // `card` starts with a blank padding row; the click anchor is the next row.
     block.cardLines = Math.max(1, card.length - 1);
-    block.rawLines = rendered.length;
     return card;
   };
 
@@ -386,17 +412,10 @@ function installPatch(
     const text = getText(this);
     const key = `${width}\u0000${text}`;
     const cached = layoutCache.get(this);
-    if (cached?.key === key) {
-      copyHits.set(this, cached.hits);
-      blockRanges.set(this, cached.ranges);
-      return cached.lines;
-    }
+    if (cached?.key === key) return cached.lines;
 
     // Plain contexts (user messages, thinking) keep native rendering.
     if (isPlainTextContext(this)) return renderWithoutCards(this, width, key);
-
-    // Messages without code fences need no per-render bookkeeping.
-    if (!text.includes("```")) return renderWithoutCards(this, width, key);
 
     const currentBlocks: CodeBlock[] = [];
     captureBlocks.set(this, currentBlocks);
@@ -407,14 +426,19 @@ function installPatch(
       captureBlocks.delete(this);
     }
 
+    // A message with no code tokens needs no per-render bookkeeping. Never key
+    // this on the source text: an indented code block has no ``` but is still
+    // rendered as a card.
     if (currentBlocks.length > 0) {
       knownBlocks.set(this, currentBlocks);
-    } else if (!lines.some((line) => stripTerminalSequences(line).includes(COPY_LABEL))) {
+    } else if (!lines.some((line) => line.includes(COPY_ANCHOR) || line.includes(RAW_ANCHOR))) {
       knownBlocks.delete(this);
     }
 
-    const plainLines = lines.map((line) => stripTerminalSequences(line));
     const blocks = knownBlocks.get(this) ?? [];
+    if (blocks.length === 0) return cacheLayout(this, key, lines);
+
+    const plainLines = lines.map((line) => stripTerminalSequences(line));
     const { hits, ranges } = locateBlocks(plainLines, blocks, visibleWidth(COPY_LABEL));
 
     const last = blocks[blocks.length - 1];
@@ -426,9 +450,9 @@ function installPatch(
     const block = knownBlocks.get(instance)?.[index];
     if (!block) return false;
 
-    const toggled = rawSources.get(instance) ?? new Set<string>();
-    if (toggled.has(block.source)) toggled.delete(block.source);
-    else toggled.add(block.source);
+    const toggled = rawSources.get(instance) ?? new Map<number, string>();
+    if (toggled.get(index) === block.source) toggled.delete(index);
+    else toggled.set(index, block.source);
     rawSources.set(instance, toggled);
     layoutCache.delete(instance);
     instance.invalidate();
@@ -443,47 +467,82 @@ function installPatch(
       return originalHandleMouse?.call(this, event);
     }
 
-    // Only interact when a gesture is active or the press starts on a card;
-    // otherwise fall through so Pi keeps normal text selection.
+    // Only interact while a gesture is active, or on the press that starts one,
+    // or on a click Pi dispatches from its own selection path.
     const gesture = gestures.get(this);
-    if (!gesture && event.type !== "press") {
+    if (!gesture && event.type !== "press" && event.type !== "click") {
       return originalHandleMouse?.call(this, event);
     }
 
-    if (event.type === "press") {
-      const hit = copyHits.get(this)?.find(
-        (item) => item.y === event.y && event.x >= item.startX && event.x < item.endX,
-      );
-      if (hit) {
-        gestures.set(this, { x: event.x, y: event.y, source: hit.source });
-        return { handled: true, capture: true };
-      }
+    const layout = layoutCache.get(this);
+    const rangeAt = (y: number): BlockRange | undefined =>
+      layout?.ranges.find((item) => y >= item.startY && y <= item.endY);
 
-      const range = blockRanges.get(this)?.find((item) => event.y >= item.startY && event.y <= item.endY);
-      if (!range) {
+    if (event.type === "press") {
+      capturedEcho.delete(this);
+      const range = rangeAt(event.y);
+      const block = range ? knownBlocks.get(this)?.[range.index] : undefined;
+      if (!range || !block) {
         gestures.delete(this);
         return originalHandleMouse?.call(this, event);
       }
-      gestures.set(this, { x: event.x, y: event.y, index: range.index });
+      // A raw block is selectable text, so only its opening fence row is a
+      // click target. Leaving the code to Pi keeps drag-to-select working; a
+      // plain click there comes back as a click event (see below).
+      if (block.raw && event.y !== range.startY) {
+        gestures.delete(this);
+        return originalHandleMouse?.call(this, event);
+      }
+      const hit = layout?.hits.find(
+        (item) => item.y === event.y && event.x >= item.startX && event.x < item.endX,
+      );
+      gestures.set(this, { source: hit?.source, index: range.index, blockSource: block.source });
       return { handled: true, capture: true };
+    }
+
+    // Pi dispatches a click for a press it kept for text selection, which is how
+    // a raw block stays selectable and still collapses on a plain click. The
+    // echo of our own captured release is not a second activation: the release
+    // already toggled, and by now the block reads as raw either way.
+    if (event.type === "click") {
+      if (capturedEcho.delete(this)) return originalHandleMouse?.call(this, event);
+      // Pi counts multi-clicks here too, and those select a word or a line.
+      // Folding the block on the second click would throw that selection away.
+      if ((event.clickCount ?? 1) > 1) return originalHandleMouse?.call(this, event);
+      const range = rangeAt(event.y);
+      const block = range ? knownBlocks.get(this)?.[range.index] : undefined;
+      if (range && block?.raw && toggleRawBlock(this, range.index)) {
+        return { handled: true, render: true };
+      }
+      return originalHandleMouse?.call(this, event);
     }
 
     if (!gesture) return { handled: true };
 
+    // Motion is not a cancellation: a held button makes terminals report
+    // movement at cell granularity, so an ordinary click routinely arrives as
+    // press, drag, release. The release below decides. Motion changes nothing,
+    // and Pi renders on every drag unless told otherwise.
     if (event.type === "drag" || event.type === "move") {
-      if (event.x !== gesture.x || event.y !== gesture.y) gestures.delete(this);
-      return { handled: true };
+      return { handled: true, render: false };
     }
 
     if (event.type === "release") {
       gestures.delete(this);
-      if (event.x !== gesture.x || event.y !== gesture.y) return { handled: true };
+      const range = rangeAt(event.y);
+      const block = range ? knownBlocks.get(this)?.[range.index] : undefined;
+      // A release that left the pressed card is a drag; a changed source means
+      // a streaming update renumbered the blocks under the pointer.
+      if (!range || range.index !== gesture.index || block?.source !== gesture.blockSource) {
+        return { handled: true };
+      }
 
+      capturedEcho.add(this);
       if (gesture.source !== undefined) {
         copyCode(gesture.source);
         return { handled: true };
       }
-      if (gesture.index !== undefined && toggleRawBlock(this, gesture.index)) {
+      if (toggleRawBlock(this, gesture.index)) {
         return { handled: true, render: true };
       }
     }

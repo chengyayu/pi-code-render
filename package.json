@@ -1,6 +1,6 @@
 {
   "name": "pi-code-render",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Render fenced code blocks in Pi's transcript as styled, flush-edge cards with one-click copy and a raw-text toggle.",
   "license": "MIT",
   "keywords": [
@@ -20,7 +20,8 @@
   },
   "type": "module",
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node test/render.test.mjs"
   },
   "files": [
     "extensions",
