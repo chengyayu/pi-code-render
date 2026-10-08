@@ -1,0 +1,43 @@
+name: Release
+
+# Publishing is deliberately tied to a tag, not to a branch push: the tag is the
+# promise that the version in package.json is the one that was verified.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  # npm provenance signs the published tarball against this workflow run.
+  id-token: write
+
+jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      # A tag that disagrees with package.json would publish a version nobody
+      # verified, so fail before npm sees it.
+      - name: Check the tag against package.json
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag v$tag does not match package.json version $pkg"
+            exit 1
+          fi
+
+      - name: Publish to npm
+        run: npm publish --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

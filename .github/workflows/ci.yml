@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Release runs this same verification before it publishes, so "verified" has
+  # exactly one definition.
+  workflow_call:
 
 jobs:
   typecheck:
