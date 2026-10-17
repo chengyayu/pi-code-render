@@ -32,6 +32,13 @@ const COPY_ANCHOR = `\u200b${COPY_LABEL}`;
 const RAW_ANCHOR = "\u2060";
 const STATUS_KEY = "pi-code-render";
 const STATUS_CLEAR_MS = 2000;
+/**
+ * Fixed sample the startup self-check renders through the patched Markdown to
+ * confirm Pi's renderer still has the shape the patch assumes.
+ */
+const SELF_CHECK_SAMPLE = "```ts\nconst alpha = 1;\nconst beta = alpha + 2;\n```";
+/** Terminal width used by the self-check; wide enough to avoid wrapping. */
+const SELF_CHECK_WIDTH = 60;
 
 /** Left/right padding inside a code card, in terminal columns. */
 const CARD_PAD = "  ";
@@ -94,7 +101,13 @@ type MarkdownWithPrivateRenderer = Omit<Markdown, "renderToken" | "render" | "ha
   handleMouse?: (event: TuiMouseEvent) => TuiMouseEventResult | undefined;
 };
 
-type PatchRecord = { restore: () => void };
+type VerifyResult = { ok: boolean; reason?: string };
+
+type PatchRecord = {
+  restore: () => void;
+  /** Render a fixed sample through the patch and confirm the card shape. */
+  verify: () => VerifyResult;
+};
 
 const EMPTY_HITS: CopyHit[] = [];
 const EMPTY_RANGES: BlockRange[] = [];
@@ -275,7 +288,7 @@ function installPatch(
   getTheme: () => ExtensionContext["ui"]["theme"],
   copyCode: (source: string) => void,
   setLatestCode: (source: string) => void,
-): () => void {
+): PatchRecord {
   const prototype = Markdown.prototype as unknown as MarkdownWithPrivateRenderer &
     Record<PropertyKey, PatchRecord | undefined>;
   prototype[PATCH]?.restore();
@@ -554,7 +567,43 @@ function installPatch(
   prototype.render = patchedRender;
   prototype.handleMouse = patchedHandleMouse;
 
+  /**
+   * Render a fixed code-only sample through the patched class and assert the
+   * three invariants the patch relies on: the hit mapping finds exactly one
+   * button, the copy anchor survives into the rendered rows, and no fence row
+   * leaks into the output. Runs on its own Markdown instance, so it touches no
+   * transcript state.
+   */
+  const verify = (): VerifyResult => {
+    try {
+      // Also proves the theme getter resolves; a missing context fails here.
+      getTheme();
+      const markdownTheme = {
+        codeBlock: (value: string) => value,
+        codeBlockBorder: (value: string) => value,
+        codeBlockIndent: "  ",
+      } as unknown as ConstructorParameters<typeof Markdown>[3];
+      const instance = new Markdown(SELF_CHECK_SAMPLE, 0, 0, markdownTheme);
+      const rendered = instance.render(SELF_CHECK_WIDTH);
+      const layout = layoutCache.get(instance);
+      const plain = rendered.map((line) => stripTerminalSequences(line));
+      if (!layout || layout.hits.length !== 1) {
+        return { ok: false, reason: "copy button was not located" };
+      }
+      if (!plain.some((line) => line.includes(COPY_ANCHOR))) {
+        return { ok: false, reason: "copy anchor missing from rendered card" };
+      }
+      if (plain.some((line) => line.trimStart().startsWith("```"))) {
+        return { ok: false, reason: "fence rows survived card rendering" };
+      }
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+    }
+  };
+
   const record: PatchRecord = {
+    verify,
     restore() {
       if (prototype.renderToken === patchedRenderToken) prototype.renderToken = originalRenderToken;
       if (prototype.render === patchedRender) prototype.render = originalRender;
@@ -566,7 +615,7 @@ function installPatch(
     },
   };
   prototype[PATCH] = record;
-  return record.restore;
+  return record;
 }
 
 // ---------------------------------------------------------------------------
@@ -636,7 +685,7 @@ export default function (pi: ExtensionAPI) {
     if (ctx.mode !== "tui") return;
 
     themeContext = ctx;
-    restore = installPatch(
+    const record = installPatch(
       () => {
         if (!themeContext) throw new Error("pi-code-render has no active TUI theme");
         return themeContext.ui.theme;
@@ -648,6 +697,28 @@ export default function (pi: ExtensionAPI) {
         latestCode = source;
       },
     );
+    restore = record.restore;
+
+    // Probe the patched renderer with a fixed sample before any real message
+    // depends on it. If Pi's internal renderer no longer matches the shape the
+    // patch assumes, revert to native rendering and say so instead of failing
+    // silently with every code block still looking unstyled.
+    const check = record.verify();
+    if (!check.ok) {
+      resetSessionState();
+      try {
+        ctx.ui.notify(
+          `pi-code-render disabled for this session: ${check.reason ?? "unknown reason"}. Native rendering is active.`,
+          "warning",
+        );
+      } catch {
+        // Stale ctx; the restore above already took effect.
+      }
+      return;
+    }
+    // The self-check routes its sample through the same capture path as real
+    // messages and would otherwise leave the sample as the "latest" block.
+    latestCode = "";
   });
 
   pi.on("session_shutdown", () => {

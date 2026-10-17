@@ -58,6 +58,10 @@ pi install npm:pi-code-render
 - 在 regular 和 fullscreen TUI 模式下均可工作；非 TUI 模式不受影响。
 - 卡片效果通过 patch Pi 内部的 Markdown 渲染器实现，该渲染器目前没有公开的
   transcript 样式钩子。未来 Pi 版本可能需要本包跟进更新。
+- **启动自检**：每次 session start 时，扩展会用固定样例渲染一遍并校验卡片形状。
+  如果 Pi 内部结构变化导致 patch 不再成立，扩展会还原为原生渲染并发出一条
+  warning 说明原因，而不是静默失效。CI 会对最新版和上一 minor 的 Pi 各跑一遍
+  测试，尽量在发版前发现这类变化。
 
 ## 卸载
 

@@ -63,6 +63,12 @@ card.
 - The card presentation patches Pi's internal Markdown renderer, which does
   not currently expose public hooks for transcript styling. A future Pi
   release may require an update to this package.
+- **Startup self-check.** On every session start the extension renders a fixed
+  sample through the patched renderer and verifies the card shape. If Pi's
+  internals no longer match what the patch assumes, it restores native
+  rendering and posts a warning explaining why, instead of failing silently.
+  CI additionally runs the test suite against the latest and previous-minor Pi
+  releases to catch such changes before they ship.
 
 ## Uninstall
 

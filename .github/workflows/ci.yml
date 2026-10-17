@@ -9,8 +9,35 @@ on:
   workflow_call:
 
 jobs:
-  typecheck:
+  # The extension patches pi-tui's internal Markdown renderer, so it must be
+  # verified against more than the newest Pi: a renderer shape change in a
+  # released version would otherwise only surface as silent breakage on user
+  # machines. The matrix covers the current latest release and the previous
+  # minor line; scripts/resolve-pi-versions.mjs keeps those pins from going
+  # stale.
+  resolve-pi-versions:
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.versions.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Resolve Pi versions to test against
+        id: versions
+        run: echo "matrix=$(node scripts/resolve-pi-versions.mjs)" >> "$GITHUB_OUTPUT"
+
+  typecheck:
+    needs: resolve-pi-versions
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.resolve-pi-versions.outputs.matrix) }}
+    name: typecheck (pi ${{ matrix.pi }})
     steps:
       - uses: actions/checkout@v4
 
@@ -21,8 +48,8 @@ jobs:
       - name: Install peer dependencies
         run: |
           npm install --no-save --omit=dev \
-            @earendil-works/pi-coding-agent \
-            @earendil-works/pi-tui \
+            @earendil-works/pi-coding-agent@${{ matrix.pi }} \
+            @earendil-works/pi-tui@${{ matrix.tui }} \
             @types/node \
             typescript \
             esbuild

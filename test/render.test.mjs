@@ -344,5 +344,56 @@ console.log("\n-- 6. 重新安装（/reload）--");
   check("重新安装：重复 start 不叠加", afterRepeat.join("\n") === baseline.join("\n"));
 }
 
+// ===========================================================================
+// 7. 启动自检：渲染器形状不合预期时静默降级
+//    session_start 会用固定样例探测 patch 后的渲染器；探测失败必须还原原生
+//    渲染并发出一条 warning，而不是带着坏 patch 静默失效。
+// ===========================================================================
+console.log("\n-- 7. 启动自检降级 --");
+{
+  const doc = ["前言", "", "```js", "const a = 1;", "```", "", "结语"].join("\n");
+  const renderDoc = () => plain(new Markdown(doc, 0, 0, theme).render(WIDTH));
+  // 上一节结束时 patch 还装着；先还原，拿到真正的原生基线。
+  handlers.session_shutdown();
+  const native = renderDoc().join("\n");
+  const notifications = [];
+  // buildCard 会调 theme.bg；让它抛错即可靠地模拟“渲染器形状变了”。
+  const brokenTheme = {
+    ...theme,
+    bg() {
+      throw new Error("simulated renderer shape change");
+    },
+  };
+  const brokenContext = {
+    mode: "tui",
+    ui: {
+      theme: brokenTheme,
+      setStatus() {},
+      notify(message, level) {
+        notifications.push({ message, level });
+      },
+    },
+  };
+
+  handlers.session_start({}, brokenContext);
+  const degraded = renderDoc().join("\n");
+  check(
+    "自检：theme 破损时 patch 被还原为原生渲染",
+    degraded === native && degraded.includes("```js"),
+  );
+  check(
+    "自检：降级时发出 warning 且说明原因",
+    notifications.length === 1 &&
+      notifications[0].level === "warning" &&
+      notifications[0].message.includes("pi-code-render disabled"),
+    notifications[0]?.message ?? "无通知",
+  );
+
+  // 恢复正常 theme 后重新安装，卡片必须回来（真实场景：用户修好环境后重启会话）。
+  handlers.session_start({}, tuiContext);
+  const recovered = renderDoc().join("\n");
+  check("自检：恢复正常 theme 后卡片回归", recovered !== native && has(recovered.split("\n"), "[COPY]"));
+}
+
 console.log(failures === 0 ? "\n全部通过 ✅" : `\n${failures} 项失败 ❌`);
 process.exit(failures === 0 ? 0 : 1);
