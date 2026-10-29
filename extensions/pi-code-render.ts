@@ -152,10 +152,19 @@ function runCopyProgram(program: string, args: string[], source: string): Promis
       clearTimeout(timeout);
       reject(error);
     });
+    // Success is decided on "exit", not "close": wl-copy forks a background
+    // process to keep serving the selection, and that process inherits our stderr
+    // pipe, so "close" (which waits for every stdio stream to end) never fires.
+    child.once("exit", (code) => {
+      if (code !== 0) return;
+      clearTimeout(timeout);
+      child.stderr.destroy();
+      resolve();
+    });
+    // A failing program exits without forking, so "close" delivers its stderr.
     child.once("close", (code) => {
       clearTimeout(timeout);
-      if (code === 0) resolve();
-      else reject(new Error(stderr.trim() || `${program} exited with code ${code ?? "unknown"}`));
+      reject(new Error(stderr.trim() || `${program} exited with code ${code ?? "unknown"}`));
     });
     child.stdin.end(source, "utf8");
   });

@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { transform } from "esbuild";
@@ -38,7 +39,8 @@ const theme = {
 
 // Install the real extension through its public entry point.
 const handlers = {};
-extension({ registerShortcut() {}, on(name, fn) { handlers[name] = fn; } });
+const shortcuts = [];
+extension({ registerShortcut(_key, options) { shortcuts.push(options); }, on(name, fn) { handlers[name] = fn; } });
 const tuiContext = { mode: "tui", ui: { theme, setStatus() {}, notify() {} } };
 handlers.session_start({}, tuiContext);
 
@@ -393,6 +395,67 @@ console.log("\n-- 7. 启动自检降级 --");
   handlers.session_start({}, tuiContext);
   const recovered = renderDoc().join("\n");
   check("自检：恢复正常 theme 后卡片回归", recovered !== native && has(recovered.split("\n"), "[COPY]"));
+}
+
+// ===========================================================================
+// 8. 剪贴板：wl-copy 会 fork 后台进程继续持有选区，并继承 stderr 管道。
+//    按 "close" 判成功会一直等到 3s 超时，再落到 xclip/xsel 的「找不到」错误。
+//    这里用一个假 wl-copy 复刻该行为：写出数据、留一个占着 stderr 的后台进程、立即退出 0。
+// ===========================================================================
+console.log("\n-- 8. 剪贴板：后台进程占着 stderr --");
+if (process.platform !== "linux") {
+  console.log("SKIP  非 Linux：不走 wl-copy 路径");
+} else {
+  const { getNativeClipboard } = await import("@earendil-works/pi-tui");
+  if (getNativeClipboard()?.setText) {
+    console.log("SKIP  原生剪贴板可用：不会走命令行回退路径");
+  } else {
+    const bin = await mkdtemp(resolve(tmpdir(), "pi-code-render-clip-"));
+    const out = resolve(bin, "clipboard.txt");
+    await writeFile(
+      resolve(bin, "wl-copy"),
+      // 后台进程重定向了 stdin/stdout 但保留 stderr，与真实 wl-copy 一致；睡得比 3s 超时久。
+      `#!/bin/sh\ncat > "${out}"\nsleep 6 </dev/null >/dev/null &\nexit 0\n`,
+    );
+    await chmod(resolve(bin, "wl-copy"), 0o755);
+
+    const saved = { PATH: process.env.PATH, WAYLAND_DISPLAY: process.env.WAYLAND_DISPLAY, DISPLAY: process.env.DISPLAY };
+    process.env.PATH = `${bin}:${saved.PATH}`;
+    process.env.WAYLAND_DISPLAY = "wayland-test";
+    delete process.env.DISPLAY;
+
+    const source = "const answer = 42;";
+    plain(new Markdown("```js\n" + source + "\n```", 0, 0, theme).render(WIDTH)); // 记下最近渲染的代码块
+    const notes = [];
+    const started = Date.now();
+    await shortcuts[0].handler({
+      ui: { theme, notify: (message, level) => notes.push({ message, level }) },
+    });
+    const elapsed = Date.now() - started;
+
+    const written = await readFile(out, "utf8").catch(() => "");
+    check("剪贴板：命令收到了代码源码", written === source, JSON.stringify(written));
+    check("剪贴板：后台进程占着 stderr 时不报错", notes.length === 0, notes[0]?.message ?? "");
+    check("剪贴板：不等 3s 超时就返回", elapsed < 2000, `${elapsed}ms`);
+
+    // 命令失败时仍要把它的 stderr 报给用户（没有 fork，"close" 会带回 stderr）。
+    await writeFile(resolve(bin, "wl-copy"), "#!/bin/sh\ncat >/dev/null\necho 'no compositor' >&2\nexit 1\n");
+    notes.length = 0;
+    await shortcuts[0].handler({
+      ui: { theme, notify: (message, level) => notes.push({ message, level }) },
+    });
+    check(
+      "剪贴板：命令失败时报告其 stderr",
+      notes.length === 1 && notes[0].level === "warning" && notes[0].message.includes("no compositor"),
+      notes[0]?.message ?? "无通知",
+    );
+
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    await rm(bin, { recursive: true, force: true });
+  }
 }
 
 console.log(failures === 0 ? "\n全部通过 ✅" : `\n${failures} 项失败 ❌`);
