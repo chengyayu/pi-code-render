@@ -29,6 +29,9 @@ raw-text view for the [Pi coding agent](https://pi.dev/).
   as JavaScript. Plain-text rendering is preserved for unknown languages.
 - **Native-first clipboard** — uses Pi's native clipboard helper with
   `pbcopy` / `wl-copy` / `xclip` / `clip` fallbacks.
+- **Works over SSH** — in an SSH, mosh, or `PI_CLIPBOARD_OSC52=1` session the
+  copy also sends an OSC 52 sequence, so it lands on the clipboard of the
+  machine you are sitting at, the same as Pi's own copy-on-select.
 - **Transient feedback** — successful copies show a footer status that clears
   itself after 2 seconds instead of persisting in the transcript.
 - **User messages untouched** — code blocks in your own messages and thinking
