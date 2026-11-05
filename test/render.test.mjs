@@ -38,7 +38,8 @@ const theme = {
 
 // Install the real extension through its public entry point.
 const handlers = {};
-extension({ registerShortcut() {}, on(name, fn) { handlers[name] = fn; } });
+let copyShortcut;
+extension({ registerShortcut(_key, options) { copyShortcut = options.handler; }, on(name, fn) { handlers[name] = fn; } });
 const tuiContext = { mode: "tui", ui: { theme, setStatus() {}, notify() {} } };
 handlers.session_start({}, tuiContext);
 
@@ -393,6 +394,78 @@ console.log("\n-- 7. 启动自检降级 --");
   handlers.session_start({}, tuiContext);
   const recovered = renderDoc().join("\n");
   check("自检：恢复正常 theme 后卡片回归", recovered !== native && has(recovered.split("\n"), "[COPY]"));
+}
+
+// ===========================================================================
+// 8. Copy reaches the clipboard of the machine the user sits at (OSC 52)
+//    Over SSH, mosh, or a multiplexer attached from another machine, the local
+//    clipboard belongs to the remote host, so a copy must also emit OSC 52 like
+//    Pi's own copy does. The hit path and Ctrl+Alt+C share one writer, so the
+//    shortcut covers both.
+// ===========================================================================
+console.log("\n-- 8. Copy over remote sessions emits OSC 52 --");
+{
+  const OSC52 = /\x1b\]52;c;([A-Za-z0-9+/=]*)\x07/g;
+  const envKeys = ["SSH_CONNECTION", "SSH_CLIENT", "MOSH_CONNECTION", "PI_CLIPBOARD_OSC52", "DISPLAY"];
+  const savedEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
+
+  /** Run the copy shortcut for a one-block document and return the OSC 52 payloads written to stdout. */
+  const copyAndCapture = async (code, env) => {
+    for (const key of envKeys) delete process.env[key];
+    // A display keeps the headless fallback (which emits OSC 52 when no local
+    // clipboard works) out of the picture, so only the remote signals matter.
+    process.env.DISPLAY = ":0";
+    Object.assign(process.env, env);
+    new Markdown(["```txt", code, "```"].join("\n"), 0, 0, theme).render(WIDTH);
+    const written = [];
+    const originalWrite = process.stdout.write;
+    process.stdout.write = (chunk, ...rest) => {
+      written.push(String(chunk));
+      const callback = rest.find((arg) => typeof arg === "function");
+      callback?.();
+      return true;
+    };
+    try {
+      await copyShortcut({ ui: { notify() {}, setStatus() {} } });
+    } finally {
+      process.stdout.write = originalWrite;
+    }
+    return [...written.join("").matchAll(OSC52)].map((match) => Buffer.from(match[1], "base64").toString("utf8"));
+  };
+
+  try {
+    const sample = "echo osc52-sample";
+    check(
+      "OSC 52: PI_CLIPBOARD_OSC52=1 emits the block source",
+      JSON.stringify(await copyAndCapture(sample, { PI_CLIPBOARD_OSC52: "1" })) === JSON.stringify([sample]),
+    );
+    check(
+      "OSC 52: SSH_CONNECTION emits the block source",
+      JSON.stringify(await copyAndCapture(sample, { SSH_CONNECTION: "192.0.2.1 1 192.0.2.2 22" })) ===
+        JSON.stringify([sample]),
+    );
+    check(
+      "OSC 52: MOSH_CONNECTION emits the block source",
+      JSON.stringify(await copyAndCapture(sample, { MOSH_CONNECTION: "1" })) === JSON.stringify([sample]),
+    );
+    check(
+      "OSC 52: a local session with a display emits nothing",
+      (await copyAndCapture(sample, {})).length === 0,
+    );
+    check(
+      "OSC 52: PI_CLIPBOARD_OSC52 other than 1 does not opt in",
+      (await copyAndCapture(sample, { PI_CLIPBOARD_OSC52: "0" })).length === 0,
+    );
+    check(
+      "OSC 52: a source over the size limit is not emitted",
+      (await copyAndCapture("x".repeat(80_000), { PI_CLIPBOARD_OSC52: "1" })).length === 0,
+    );
+  } finally {
+    for (const key of envKeys) {
+      if (savedEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedEnv[key];
+    }
+  }
 }
 
 console.log(failures === 0 ? "\n全部通过 ✅" : `\n${failures} 项失败 ❌`);

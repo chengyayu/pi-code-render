@@ -133,7 +133,7 @@ function fillRow(text: string, width: number, bg: (value: string) => string): st
 }
 
 // ---------------------------------------------------------------------------
-// Clipboard (native helper first, platform command as fallback)
+// Clipboard (native helper first, platform command as fallback, OSC 52 for remote)
 // ---------------------------------------------------------------------------
 
 function runCopyProgram(program: string, args: string[], source: string): Promise<void> {
@@ -178,7 +178,7 @@ function platformCopyCommands(): Array<[string, string[]]> {
   }
 }
 
-async function writeClipboard(source: string): Promise<void> {
+async function writeLocalClipboard(source: string): Promise<void> {
   const clipboard = getNativeClipboard();
   if (clipboard?.setText) {
     try {
@@ -198,6 +198,47 @@ async function writeClipboard(source: string): Promise<void> {
     }
   }
   throw lastError ?? new Error("Clipboard access is unavailable in this terminal");
+}
+
+/** Same ceiling Pi uses for its own OSC 52 copies. */
+const MAX_OSC52_ENCODED_LENGTH = 100_000;
+
+/**
+ * Same test Pi uses to decide that the clipboard it can reach is not the one
+ * the user is sitting at. `PI_CLIPBOARD_OSC52=1` opts in when Pi cannot see
+ * the remote session, e.g. a multiplexer attached from another machine.
+ */
+function isRemoteSession(env: NodeJS.ProcessEnv): boolean {
+  return Boolean(
+    env.SSH_CONNECTION || env.SSH_CLIENT || env.MOSH_CONNECTION || env.PI_CLIPBOARD_OSC52 === "1",
+  );
+}
+
+/** Ask the terminal to put `text` on the clipboard of the machine it runs on. */
+function emitOsc52(text: string): boolean {
+  const encoded = Buffer.from(text).toString("base64");
+  if (encoded.length > MAX_OSC52_ENCODED_LENGTH) return false;
+  process.stdout.write(`\x1b]52;c;${encoded}\x07`);
+  return true;
+}
+
+async function writeClipboard(source: string): Promise<void> {
+  const env = process.env;
+  let localError: Error | undefined;
+  try {
+    await writeLocalClipboard(source);
+  } catch (error) {
+    localError = error instanceof Error ? error : new Error(String(error));
+  }
+
+  // Mirror Pi's own copy: over SSH, mosh, or a multiplexer the local clipboard
+  // is the remote machine's, so the terminal must also be asked to set the
+  // clipboard of the machine the user is at. With no display and no working
+  // local clipboard, OSC 52 is the only route left.
+  const headless = process.platform === "linux" && !env.DISPLAY && !env.WAYLAND_DISPLAY;
+  const viaTerminal = (isRemoteSession(env) || (localError !== undefined && headless)) && emitOsc52(source);
+
+  if (localError && !viaTerminal) throw localError;
 }
 
 // ---------------------------------------------------------------------------
