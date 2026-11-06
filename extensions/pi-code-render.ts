@@ -99,6 +99,7 @@ type MarkdownWithPrivateRenderer = Omit<Markdown, "renderToken" | "render" | "ha
   ) => string[];
   render: (width: number) => string[];
   handleMouse?: (event: TuiMouseEvent) => TuiMouseEventResult | undefined;
+  invalidate: () => void;
 };
 
 type VerifyResult = { ok: boolean; reason?: string };
@@ -296,6 +297,7 @@ function installPatch(
   const originalRenderToken = prototype.renderToken;
   const originalRender = prototype.render;
   const originalHandleMouse = prototype.handleMouse;
+  const originalInvalidate = prototype.invalidate;
 
   const captureBlocks = new WeakMap<Markdown, CodeBlock[]>();
   /** Survives cached renders, where renderToken only fires on cold renders. */
@@ -568,6 +570,22 @@ function installPatch(
   prototype.handleMouse = patchedHandleMouse;
 
   /**
+   * Drop the cached rows whenever the component is invalidated.
+   *
+   * The rows kept in `layoutCache` are already painted, so they belong to the
+   * theme that was active when they were rendered. Pi invalidates the component
+   * tree when the theme changes or is previewed (`Markdown.invalidate()` clears
+   * its own cache for exactly that reason), and without this the cached rows
+   * would be returned unchanged and the cards would keep the old colours after
+   * a light/dark switch.
+   */
+  const patchedInvalidate = function (this: Markdown): void {
+    layoutCache.delete(this);
+    originalInvalidate.call(this);
+  };
+  prototype.invalidate = patchedInvalidate;
+
+  /**
    * Render a fixed code-only sample through the patched class and assert the
    * three invariants the patch relies on: the hit mapping finds exactly one
    * button, the copy anchor survives into the rendered rows, and no fence row
@@ -611,6 +629,7 @@ function installPatch(
         if (originalHandleMouse) prototype.handleMouse = originalHandleMouse;
         else delete prototype.handleMouse;
       }
+      if (prototype.invalidate === patchedInvalidate) prototype.invalidate = originalInvalidate;
       if (prototype[PATCH] === record) delete prototype[PATCH];
     },
   };

@@ -320,6 +320,38 @@ console.log("\n-- 5. raw 视图：可选中 + 单击折叠 --");
 }
 
 // ===========================================================================
+console.log("\n-- 5.5 主题切换：invalidate 后按新主题重绘 --");
+{
+  // 卡片行在渲染时就被上色并存进 layoutCache，缓存键只有宽度和文本。Pi 在主题
+  // 切换或预览时会 invalidate 组件树（pi-tui 的 Markdown.invalidate 注释写明了
+  // “主题可能变了”），插件必须在 invalidate 时丢掉缓存，否则旧配色会留在屏幕上。
+  const cardBg = (code) => `\x1b[48;5;${code}m`;
+  const themeWith = (code) => ({
+    ...theme,
+    bg: (name, value) => (name === "toolSuccessBg" ? `${cardBg(code)}${value}\x1b[0m` : value),
+  });
+  const doc = ["前言", "", "```js", "const a = 1;", "```"].join("\n");
+  const previousTheme = tuiContext.ui.theme;
+
+  tuiContext.ui.theme = themeWith(17);
+  const md = new Markdown(doc, 0, 0, theme);
+  const first = md.render(WIDTH).join("\n");
+  check("主题切换：首次渲染使用当前主题的卡片底色", first.includes(cardBg(17)));
+
+  tuiContext.ui.theme = themeWith(22);
+  md.invalidate();
+  const second = md.render(WIDTH).join("\n");
+  check(
+    "主题切换：invalidate 后重绘使用新主题底色",
+    second.includes(cardBg(22)) && !second.includes(cardBg(17)),
+    second.includes(cardBg(17)) ? "仍是旧主题" : "",
+  );
+
+  tuiContext.ui.theme = previousTheme;
+  md.invalidate();
+}
+
+// ===========================================================================
 // 6. 重新安装 patch（README 让用户 /reload）
 //    重复安装必须先还原旧 patch，否则 renderToken 会自我包裹：卡片会重复或行数翻倍。
 // ===========================================================================
