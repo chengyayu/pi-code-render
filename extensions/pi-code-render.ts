@@ -73,10 +73,19 @@ type CopyHit = {
 
 type Gesture = {
   /** Copy-button source; set only when the press landed on the button. */
-  source?: string;
+  source: string;
   index: number;
   /** Source of the pressed block; a streaming update renumbers blocks. */
   blockSource: string;
+};
+
+/**
+ * The block a press landed on, kept so a click can refuse to act when streaming
+ * renumbered the blocks under the pointer between the press and its click.
+ */
+type PressedBlock = {
+  index: number;
+  source: string;
 };
 
 type LayoutCache = {
@@ -312,6 +321,7 @@ function installPatch(
    * that echo is not a second activation.
    */
   const capturedEcho = new WeakSet<Markdown>();
+  const pressedBlocks = new WeakMap<Markdown, PressedBlock>();
   const layoutCache = new WeakMap<Markdown, LayoutCache>();
 
   const getText = (instance: Markdown): string =>
@@ -480,62 +490,67 @@ function installPatch(
       return originalHandleMouse?.call(this, event);
     }
 
-    // Only interact while a gesture is active, or on the press that starts one,
-    // or on a click Pi dispatches from its own selection path.
-    const gesture = gestures.get(this);
-    if (!gesture && event.type !== "press" && event.type !== "click") {
-      return originalHandleMouse?.call(this, event);
-    }
-
     const layout = layoutCache.get(this);
     const rangeAt = (y: number): BlockRange | undefined =>
       layout?.ranges.find((item) => y >= item.startY && y <= item.endY);
+    const hitAt = (x: number, y: number): CopyHit | undefined =>
+      layout?.hits.find((item) => item.y === y && x >= item.startX && x < item.endX);
 
     if (event.type === "press") {
       capturedEcho.delete(this);
       const range = rangeAt(event.y);
       const block = range ? knownBlocks.get(this)?.[range.index] : undefined;
-      if (!range || !block) {
+      // Remember what was pressed so the click below can refuse to act on a
+      // block that streaming renumbered, but do not capture the press itself:
+      // Pi can only start a text selection from a press it handles.
+      if (range && block) pressedBlocks.set(this, { index: range.index, source: block.source });
+      else pressedBlocks.delete(this);
+
+      const hit = hitAt(event.x, event.y);
+      if (!range || !block || !hit) {
         gestures.delete(this);
         return originalHandleMouse?.call(this, event);
       }
-      // A raw block is selectable text, so only its opening fence row is a
-      // click target. Leaving the code to Pi keeps drag-to-select working; a
-      // plain click there comes back as a click event (see below).
-      if (block.raw && event.y !== range.startY) {
-        gestures.delete(this);
-        return originalHandleMouse?.call(this, event);
-      }
-      const hit = layout?.hits.find(
-        (item) => item.y === event.y && event.x >= item.startX && event.x < item.endX,
-      );
-      gestures.set(this, { source: hit?.source, index: range.index, blockSource: block.source });
+
+      // The copy button is the one target that owns its press: keeping it means
+      // the click Pi dispatches afterwards cannot also start a selection under
+      // the button, and a release outside it cancels the copy.
+      gestures.set(this, { source: hit.source, index: range.index, blockSource: block.source });
       return { handled: true, capture: true };
     }
 
-    // Pi dispatches a click for a press it kept for text selection, which is how
-    // a raw block stays selectable and still collapses on a plain click. The
-    // echo of our own captured release is not a second activation: the release
-    // already toggled, and by now the block reads as raw either way.
+    // Folding is driven by Pi's click, which is dispatched only when press and
+    // release land on the same cell. Dragging therefore selects text instead of
+    // folding, and a press Pi kept for selection still folds on a plain click.
     if (event.type === "click") {
       if (capturedEcho.delete(this)) return originalHandleMouse?.call(this, event);
       // Pi counts multi-clicks here too, and those select a word or a line.
       // Folding the block on the second click would throw that selection away.
       if ((event.clickCount ?? 1) > 1) return originalHandleMouse?.call(this, event);
+      if (hitAt(event.x, event.y)) return originalHandleMouse?.call(this, event);
+
       const range = rangeAt(event.y);
       const block = range ? knownBlocks.get(this)?.[range.index] : undefined;
-      if (range && block?.raw && toggleRawBlock(this, range.index)) {
-        return { handled: true, render: true };
+      const pressed = pressedBlocks.get(this);
+      pressedBlocks.delete(this);
+      if (
+        !range ||
+        !block ||
+        !pressed ||
+        pressed.index !== range.index ||
+        pressed.source !== block.source
+      ) {
+        return originalHandleMouse?.call(this, event);
       }
+      if (toggleRawBlock(this, range.index)) return { handled: true, render: true };
       return originalHandleMouse?.call(this, event);
     }
 
-    if (!gesture) return { handled: true };
+    const gesture = gestures.get(this);
+    if (!gesture) return originalHandleMouse?.call(this, event);
 
-    // Motion is not a cancellation: a held button makes terminals report
-    // movement at cell granularity, so an ordinary click routinely arrives as
-    // press, drag, release. The release below decides. Motion changes nothing,
-    // and Pi renders on every drag unless told otherwise.
+    // The pressed target captured the press, so Pi is not selecting: swallow the
+    // motion and stop it from triggering a repaint on every cell.
     if (event.type === "drag" || event.type === "move") {
       return { handled: true, render: false };
     }
@@ -544,20 +559,22 @@ function installPatch(
       gestures.delete(this);
       const range = rangeAt(event.y);
       const block = range ? knownBlocks.get(this)?.[range.index] : undefined;
-      // A release that left the pressed card is a drag; a changed source means
+      const hit = hitAt(event.x, event.y);
+      // A release that left the button cancels the copy; a changed source means
       // a streaming update renumbered the blocks under the pointer.
-      if (!range || range.index !== gesture.index || block?.source !== gesture.blockSource) {
+      if (
+        !range ||
+        range.index !== gesture.index ||
+        block?.source !== gesture.blockSource ||
+        !hit ||
+        hit.source !== gesture.source
+      ) {
         return { handled: true };
       }
 
       capturedEcho.add(this);
-      if (gesture.source !== undefined) {
-        copyCode(gesture.source);
-        return { handled: true };
-      }
-      if (toggleRawBlock(this, gesture.index)) {
-        return { handled: true, render: true };
-      }
+      copyCode(gesture.source);
+      return { handled: true };
     }
 
     return { handled: true };

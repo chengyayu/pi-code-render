@@ -63,17 +63,14 @@ const mouseAt = (x, y, type = "press") => ({
 const rowOf = (md, needle) => plain(md.render(WIDTH)).findIndex((l) => l.includes(needle));
 const rowIsCard = (md, needle) => (plain(md.render(WIDTH))[rowOf(md, needle)] ?? "").includes("[COPY]");
 
-/** 扩展自己的手势路径：press -> release。 */
-const pressRelease = (md, y, x = 1) => {
-  md.handleMouse(mouseAt(x, y, "press"));
-  md.handleMouse(mouseAt(x, y, "release"));
-};
 /** Pi 的选区路径：press 未被捕获 -> release ->（未拖动时）click。 */
 const selectClick = (md, y, x = 1, clickCount = 1) => {
   md.handleMouse(mouseAt(x, y, "press"));
   md.handleMouse(mouseAt(x, y, "release"));
   md.handleMouse({ ...mouseAt(x, y, "click"), clickCount });
 };
+/** 原地单击：折叠由 Pi 回派的 click 驱动，press 本身交回 Pi 起选区。 */
+const pressRelease = (md, y, x = 1) => selectClick(md, y, x);
 /** 点卡片正文，折成 raw。 */
 const toRaw = (md, needle) => pressRelease(md, rowOf(md, needle));
 /**
@@ -122,8 +119,8 @@ console.log("\n-- 1. 围栏解析 -> 卡片划分 --");
   const indented = ["    indented_line_one", "    indented_line_two"].join("\n");
   const md = new Markdown(indented, 0, 0, theme);
   check("缩进代码块：渲染为卡片", cardCount(plain(md.render(WIDTH))) === 1);
-  const y = rowOf(md, "indented_line_one");
-  check("缩进代码块：卡片可点（命中区未被跳过）", md.handleMouse(mouseAt(1, y, "press"))?.capture === true);
+  pressRelease(md, rowOf(md, "indented_line_one"));
+  check("缩进代码块：单击可折叠（命中区未被跳过）", cardCount(plain(md.render(WIDTH))) === 0);
 }
 
 // ===========================================================================
@@ -233,8 +230,9 @@ console.log("\n-- 3. 命中区 -> 块的映射 --");
   md.setText(["新块", "", "```js", "const NEW = 1;", "```", "", ...doc.split("\n")].join("\n"));
   md.render(WIDTH);
   md.handleMouse(mouseAt(1, y, "release"));
-  // 块被重编号后，按下的那个块已经不在原 index 上：宁可不动作，也不能切到别的块
-  check("流式重排：块被重编号时不错切（宁可不动）", rawHandleRows(md.render(WIDTH)).length === 0);
+  md.handleMouse({ ...mouseAt(1, y, "click"), clickCount: 1 });
+  // 块被重编号后，按下的那个块已经不在原 index 上：宁可不动作，也不能折到别的块
+  check("流式重排：块被重编号时不错折（宁可不动）", rawHandleRows(md.render(WIDTH)).length === 0);
 }
 
 // ===========================================================================
@@ -244,26 +242,39 @@ console.log("\n-- 3. 命中区 -> 块的映射 --");
 console.log("\n-- 4. 鼠标手势 --");
 {
   const doc = ["前言", "", "```js", "const a = 1;", "```", "", "结语"].join("\n");
-  const dragged = (events) => {
-    const md = new Markdown(doc, 0, 0, theme);
-    const y = rowOf(md, "const a = 1;");
-    for (const [type, dx, dy] of events) md.handleMouse(mouseAt(1 + dx, y + dy, type));
-    return !rowIsCard(md, "const a = 1;");
-  };
+  const fresh = () => new Markdown(doc, 0, 0, theme);
+  const card = (md) => rowIsCard(md, "const a = 1;");
 
-  check("抖动：原地 press+release 切换", dragged([["press", 0, 0], ["release", 0, 0]]));
-  check(
-    "抖动：drag 右移 1 格后松开仍切换",
-    dragged([["press", 0, 0], ["drag", 1, 0], ["release", 1, 0]]),
-    "修复前 drag 直接丢弃手势，点击无反应",
-  );
-  check(
-    "抖动：move 下移 1 行后松开仍切换",
-    dragged([["press", 0, 0], ["move", 0, 1], ["release", 0, 1]]),
-    "修复前 move 直接丢弃手势，点击无反应",
-  );
-  check("抖动：抖出去再回到原格松开仍切换", dragged([["press", 0, 0], ["drag", 1, 0], ["release", 0, 0]]));
-  check("拖拽：拖出卡片再松开不切换", !dragged([["press", 0, 0], ["drag", 0, 20], ["release", 0, 20]]));
+  {
+    const md = fresh();
+    check(
+      "拖选：卡片正文的 press 交回 Pi（不捕获）",
+      md.handleMouse(mouseAt(1, rowOf(md, "const a = 1;"), "press")) === undefined,
+      "捕获了 Pi 就起不了选区",
+    );
+  }
+  {
+    const md = fresh();
+    const y = rowOf(md, "const a = 1;");
+    md.handleMouse(mouseAt(1, y, "press"));
+    md.handleMouse(mouseAt(10, y, "drag"));
+    md.handleMouse(mouseAt(10, y, "release"));
+    check("拖选：拖到别处松开不折叠（Pi 不派 click）", card(md));
+  }
+  {
+    const md = fresh();
+    pressRelease(md, rowOf(md, "const a = 1;"));
+    check("单击：press 与 release 同格时折叠", !card(md));
+  }
+  {
+    const md = fresh();
+    const y = rowOf(md, "const a = 1;");
+    md.handleMouse(mouseAt(1, y, "press"));
+    md.handleMouse(mouseAt(1, y, "move"));
+    md.handleMouse(mouseAt(1, y, "release"));
+    pressRelease(md, y);
+    check("移动：hover 不取消折叠", !card(md));
+  }
 }
 
 // ===========================================================================

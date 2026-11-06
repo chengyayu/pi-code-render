@@ -47,14 +47,16 @@ Then restart Pi or run `/reload`.
 | Action | Result |
 | --- | --- |
 | Click `[COPY]` | Copy that block's source to the clipboard |
+| Drag inside a card | Select its text as normal text (Pi's copy-on-select copies it) |
 | Click anywhere else on a card | Toggle between card and raw fenced text |
 | Click a raw block's code | Toggle it back to a card |
 | Drag over a raw block's code | Select it as normal text (Pi's copy-on-select copies it) |
 | `Ctrl+Alt+C` | Copy the most recently rendered code block |
 
-Raw fenced text stays selectable: the code is left to Pi's text selection, so drag
-or double-click to select and copy. A plain click folds the block back into a
-card.
+The press is left to Pi so a drag selects text; only the `[COPY]` button keeps it.
+Folding therefore hangs off Pi's click, which is dispatched when press and release
+land on the same cell: a plain click folds the block, a drag selects its text, and
+double-click still selects a word.
 
 ## Compatibility
 
